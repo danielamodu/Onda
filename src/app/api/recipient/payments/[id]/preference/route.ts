@@ -13,7 +13,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const result = await selectRecipientPreference(account.id, id, parsed.data.preference);
     return NextResponse.json({ ...result, message: parsed.data.preference === "CONVERT_TO_NGN"
       ? "Your NGN preference is saved. Conversion and bank payout have not started."
-      : "Your stablecoin preference is saved. No funds moved." });
+      : "Your USDC preference is saved. No funds moved." });
   } catch (error) {
     if (error instanceof RecipientAccessError) return NextResponse.json({ error: "Payment not found." }, { status: 404 });
     if (error instanceof RecipientPaymentUnavailableError) return NextResponse.json({ error: error.message }, { status: 409 });

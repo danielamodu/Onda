@@ -35,7 +35,7 @@ export function RecipientAuthForm({ mode }: { mode: "signup" | "login" }) {
     <label>Email<input name="email" type="email" autoComplete="email" required maxLength={254} placeholder="you@example.com" /></label>
     <label>Password<input name="password" type="password" autoComplete={signup ? "new-password" : "current-password"} required minLength={signup ? 10 : 1} maxLength={100} placeholder={signup ? "At least 10 characters" : "Your password"} /></label>
     {error && <p className="form-error" role="alert">{error}</p>}
-    <button className="button button-primary full-width" type="submit" disabled={busy}>{busy ? "Please wait…" : signup ? "Create recipient account" : "Sign in"}</button>
+    <button className="button button-primary full-width" type="submit" disabled={busy}>{busy ? "Please wait…" : signup ? "Create account" : "Sign in"}</button>
     <p className="form-footnote">{signup ? <>Already have an account? <Link href="/recipient/login">Sign in</Link></> : <>New to Onda? <Link href="/recipient/signup">Create an account</Link></>}</p>
   </form>;
 }

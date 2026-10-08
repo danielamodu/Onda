@@ -38,7 +38,7 @@ export function RecipientPreferenceForm({ paymentId, preference }: { paymentId: 
     <h2>How do you want to receive this?</h2>
     <label className={`preference-option${selected === "KEEP_STABLECOIN" ? " preference-selected" : ""}`}>
       <input type="radio" name="preference" value="KEEP_STABLECOIN" checked={selected === "KEEP_STABLECOIN"} onChange={() => setSelected("KEEP_STABLECOIN")} />
-      <span><strong>Keep USDC</strong><small>Keep your payment in stablecoin.</small></span>
+      <span><strong>Keep USDC</strong><small>Leave the payment in USDC.</small></span>
     </label>
     <label className={`preference-option${selected === "CONVERT_TO_NGN" ? " preference-selected" : ""}`}>
       <input type="radio" name="preference" value="CONVERT_TO_NGN" checked={selected === "CONVERT_TO_NGN"} onChange={() => setSelected("CONVERT_TO_NGN")} />

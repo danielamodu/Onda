@@ -5,6 +5,7 @@ import { RecipientPortalHeader } from "@/components/recipient-portal-header";
 import { RecipientPreferenceForm } from "@/components/recipient-preference";
 import { getRecipientSessionAccount } from "@/lib/auth/recipient-session";
 import { getIncomingPayment, isRecipientPaymentSettled } from "@/lib/recipients/service";
+import { paymentStatusLabel } from "@/lib/payments/domain";
 
 const money = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -18,7 +19,7 @@ export default async function RecipientPaymentPage({ params }: { params: Promise
   const settlement = payment.settlements[0] ?? null;
   const available = isRecipientPaymentSettled(payment);
   const simulated = payment.status === "settled" && settlement?.isSimulation === true;
-  const displayedStatus = available ? "settled" : simulated ? "test simulation" : payment.status === "settled" ? "settlement unverified" : payment.status.replaceAll("_", " ");
+  const displayedStatus = available ? "Settled" : simulated ? "Test simulation" : payment.status === "settled" ? "Settlement unverified" : paymentStatusLabel(payment.status);
   const funded = Boolean(payment.transactionHash && payment.confirmedAt);
   const fundingStatus = funded ? "Confirmed on Base" : payment.status === "funding" ? "Confirmation pending" : "Not funded yet";
   const settlementStatus = available ? "Verified" : simulated ? "Test only · no funds moved" : settlement?.status === "pending" ? "In progress" : "Not verified";

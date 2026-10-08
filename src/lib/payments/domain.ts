@@ -6,6 +6,22 @@ export const paymentStatuses = [
 ] as const;
 export type PaymentStatus = (typeof paymentStatuses)[number];
 
+const paymentStatusLabels: Record<PaymentStatus, string> = {
+  draft: "Draft",
+  created: "Created",
+  funding: "Funding",
+  funded: "Funded",
+  settling: "Settling",
+  settled: "Settled",
+  payout_pending: "Payout pending",
+  completed: "Completed",
+  failed: "Failed",
+};
+
+export function paymentStatusLabel(status: PaymentStatus): string {
+  return paymentStatusLabels[status];
+}
+
 const transitions: Record<PaymentStatus, readonly PaymentStatus[]> = {
   draft: ["created", "failed"],
   created: ["funding", "failed"],
