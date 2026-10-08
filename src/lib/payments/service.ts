@@ -3,15 +3,20 @@ import type { CreatePaymentInput } from "@/lib/payments/domain";
 
 export async function createPayment(businessId: string, input: CreatePaymentInput) {
   return db.$transaction(async (tx) => {
+    const identifier = input.identifier.includes("@") ? input.identifier.toLowerCase() : input.identifier;
+    const account = identifier.includes("@")
+      ? await tx.recipientAccount.findUnique({ where: { email: identifier }, select: { id: true } })
+      : null;
     const recipient = await tx.recipient.upsert({
-      where: { businessId_identifier: { businessId, identifier: input.identifier } },
-      update: { name: input.recipientName, country: input.country, payoutCurrency: input.payoutCurrency },
+      where: { businessId_identifier: { businessId, identifier } },
+      update: { name: input.recipientName, country: input.country, payoutCurrency: input.payoutCurrency, ...(account ? { accountId: account.id } : {}) },
       create: {
         businessId,
         name: input.recipientName,
-        identifier: input.identifier,
+        identifier,
         country: input.country,
         payoutCurrency: input.payoutCurrency,
+        accountId: account?.id,
       },
     });
 

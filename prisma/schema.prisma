@@ -38,6 +38,11 @@ enum SettlementVerificationStatus {
   failed
 }
 
+enum RecipientSettlementPreference {
+  KEEP_STABLECOIN
+  CONVERT_TO_NGN
+}
+
 model Business {
   id        String   @id @default(cuid())
   name      String
@@ -80,11 +85,36 @@ model Recipient {
   identifier         String
   country            String         @default("NG")
   payoutCurrency     PayoutCurrency @default(NGN)
+  accountId          String?
+  account            RecipientAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   payments           Payment[]
   @@unique([businessId, identifier])
   @@index([businessId])
+  @@index([accountId])
+}
+
+model RecipientAccount {
+  id           String                @id @default(cuid())
+  email        String                @unique
+  name         String
+  passwordHash String
+  recipients   Recipient[]
+  sessions     RecipientAuthSession[]
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+}
+
+model RecipientAuthSession {
+  id                 String           @id @default(cuid())
+  tokenHash          String           @unique
+  recipientAccountId String
+  recipientAccount   RecipientAccount @relation(fields: [recipientAccountId], references: [id], onDelete: Cascade)
+  expiresAt          DateTime
+  createdAt          DateTime         @default(now())
+  @@index([recipientAccountId])
+  @@index([expiresAt])
 }
 
 model Payment {
@@ -97,6 +127,8 @@ model Payment {
   asset           String        @default("USDC")
   country         String        @default("NG")
   payoutCurrency  PayoutCurrency
+  recipientPreference RecipientSettlementPreference?
+  recipientPreferenceSelectedAt DateTime?
   reference       String?
   status          PaymentStatus @default(draft)
   transactionHash String?       @unique

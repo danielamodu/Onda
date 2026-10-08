@@ -4,6 +4,7 @@ const dbMock = vi.hoisted(() => {
   const tx = {
     recipient: { upsert: vi.fn() },
     payment: { create: vi.fn() },
+    recipientAccount: { findUnique: vi.fn().mockResolvedValue(null) },
   };
   return { tx, $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)) };
 });
@@ -52,6 +53,20 @@ describe("payment creation", () => {
     expect(tx.recipient.upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { businessId_identifier: { businessId: "business-1", identifier: "ada@example.com" } } }));
     expect(tx.payment.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ businessId: "business-1", recipientId: "recipient-1", status: "created", amount: 500, asset: "USDC" }) }));
     expect(payment).toMatchObject({ id: "payment-1", status: "created" });
+  });
+
+  it("links a business contact to an existing recipient account by normalized email", async () => {
+    tx.recipientAccount.findUnique.mockResolvedValue({ id: "recipient-account-1" });
+    tx.recipient.upsert.mockResolvedValue({ id: "recipient-1" });
+    tx.payment.create.mockResolvedValue({ id: "payment-1", status: "created" });
+    const input = createPaymentSchema.parse({ ...validInput, identifier: "Ada@Example.com" });
+    await createPayment("business-1", input);
+    expect(tx.recipientAccount.findUnique).toHaveBeenCalledWith({ where: { email: "ada@example.com" }, select: { id: true } });
+    expect(tx.recipient.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { businessId_identifier: { businessId: "business-1", identifier: "ada@example.com" } },
+      update: expect.objectContaining({ accountId: "recipient-account-1" }),
+      create: expect.objectContaining({ accountId: "recipient-account-1" }),
+    }));
   });
 });
 
