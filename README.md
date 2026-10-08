@@ -4,7 +4,7 @@ Onda is a business payment MVP. It stores payment intents in PostgreSQL and supp
 
 ## Requirements
 
-- Node.js 20.9 or newer
+- Node.js 20.19 or newer
 - PostgreSQL 14 or newer
 
 ## Run locally
@@ -13,6 +13,12 @@ Onda is a business payment MVP. It stores payment intents in PostgreSQL and supp
 2. Install dependencies with `npm install`.
 3. Run `npm run db:deploy` to apply migrations, then `npm run dev`.
 4. Open `http://localhost:3000` and create a business account.
+
+## Neon primitives
+
+Onda keeps Prisma as its database layer. `DATABASE_URL` can point to a local PostgreSQL instance or a pooled Neon PostgreSQL connection string; the Prisma schema remains the source of truth. The root [`neon.ts`](neon.ts) declares a private `uploads` bucket and a minimal `health` Function alongside the database that every Neon project provides.
+
+To connect this repository to a Neon project, install the dependencies, authenticate with the Neon CLI, and link the project with `npx neon link`. Review the configuration with `npx neon config plan` before applying it with `npx neon deploy`. Neon Functions and Object Storage currently require a project in `aws-us-east-2`, `aws-us-east-1`, `aws-eu-central-1`, or `aws-ap-southeast-1`, as well as account access. Applying the config provisions Neon resources; it is not part of the local app startup steps.
 
 Funding defaults to Base Sepolia (chain ID `84532`) and Circle test USDC. Testnet USDC has no financial value. Use an RPC endpoint in `BASE_RPC_URL`; the default public endpoint is suitable for development and may be rate-limited. Set `BASE_CONFIRMATIONS` to the number of blocks Onda should verify (default `2`).
 
