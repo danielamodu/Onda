@@ -20,6 +20,8 @@ Base mainnet is opt-in: set `BASE_CHAIN_ID=8453`, a Base mainnet `BASE_RPC_URL`,
 
 Settlement defaults to the unavailable real Tempo adapter and fails closed. For local UI/service testing only, set `SETTLEMENT_PROVIDER=test` outside production. This provider performs a labeled simulation and sends no transaction or funds. The real route prerequisites are documented in [`docs/TEMPO_SETTLEMENT_ROUTE.md`](docs/TEMPO_SETTLEMENT_ROUTE.md).
 
+Recipients can create a separate account using the email address the sender used, then view incoming payments at `/recipient`. A payment becomes available for recipient preferences only after a real destination settlement is independently verified. Saving “Keep USDC” or “Convert to NGN” records intent only; no conversion or payout is started. The NGN payout provider is intentionally unavailable until a real off-ramp is integrated.
+
 During local development, `npm run db:migrate` applies pending migrations and can create new ones when the schema changes. For deployment, use `npm run db:deploy`.
 
 ## Checks
