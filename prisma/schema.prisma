@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PaymentStatus {
+  draft
+  created
+  funding
+  funded
+  settling
+  settled
+  payout_pending
+  completed
+  failed
+}
+
+enum PayoutCurrency {
+  USDC
+  NGN
+}
+
+enum SettlementAttemptStatus {
+  pending
+  settled
+  failed
+}
+
+enum SettlementVerificationStatus {
+  unverified
+  pending
+  verified
+  simulated
+  failed
+}
+
+model Business {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  users     User[]
+  recipients Recipient[]
+  payments  Payment[]
+}
+
+model User {
+  id           String        @id @default(cuid())
+  name         String
+  email        String        @unique
+  passwordHash String
+  businessId   String
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  sessions     AuthSession[]
+  createdAt    DateTime      @default(now())
+  @@index([businessId])
+}
+
+model AuthSession {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Recipient {
+  id                 String         @id @default(cuid())
+  businessId         String
+  business           Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name               String
+  identifier         String
+  country            String         @default("NG")
+  payoutCurrency     PayoutCurrency @default(NGN)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  payments           Payment[]
+  @@unique([businessId, identifier])
+  @@index([businessId])
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  businessId      String
+  business        Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  recipientId     String
+  recipient       Recipient     @relation(fields: [recipientId], references: [id], onDelete: Restrict)
+  amount          Decimal       @db.Decimal(18, 2)
+  asset           String        @default("USDC")
+  country         String        @default("NG")
+  payoutCurrency  PayoutCurrency
+  reference       String?
+  status          PaymentStatus @default(draft)
+  transactionHash String?       @unique
+  fundingAuthorizationSignature String?
+  chainId         Int?
+  tokenAddress    String?
+  senderAddress   String?
+  destinationAddress String?
+  blockNumber     BigInt?
+  blockHash       String?
+  confirmedAt     DateTime?
+  fundingError    String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  settlements     PaymentSettlement[]
+  @@index([businessId, createdAt])
+  @@index([recipientId])
+  @@index([status])
+}
+
+model PaymentSettlement {
+  id                         String                        @id @default(cuid())
+  paymentId                  String
+  payment                    Payment                       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  attemptNumber              Int
+  provider                   String
+  providerIdempotencyKey     String                        @unique
+  status                     SettlementAttemptStatus       @default(pending)
+  verificationStatus         SettlementVerificationStatus  @default(unverified)
+  isSimulation               Boolean                       @default(false)
+  retryable                  Boolean                       @default(false)
+  sourceChainId              Int?
+  destinationChainId         Int?
+  sourceAsset                String?
+  sourceTokenAddress         String?
+  destinationAsset           String?
+  destinationTokenAddress    String?
+  sourceAmount               Decimal?                      @db.Decimal(36, 18)
+  destinationAmount          Decimal?                      @db.Decimal(36, 18)
+  recipientAddress           String?
+  sourceTransactionHash      String?
+  destinationTransactionHash String?                       @unique
+  bridgeMessageId            String?                       @unique
+  initiatedAt                DateTime                      @default(now())
+  verifiedAt                 DateTime?
+  settledAt                  DateTime?
+  failedAt                   DateTime?
+  failureReason              String?
+  createdAt                  DateTime                      @default(now())
+  updatedAt                  DateTime                      @updatedAt
+
+  @@unique([paymentId, attemptNumber])
+  @@index([paymentId, status])
+}
