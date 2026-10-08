@@ -1,26 +1,40 @@
-# Tempo settlement route: verification required
+# Tempo settlement route: CCIP setup required
 
-The real Tempo adapter is intentionally not implemented. The project has no authoritative route configuration for Base Sepolia to Tempo Moderato, and unknown route or asset values are not filled in with guesses. `TempoSettlementProvider` fails closed before changing a payment state.
+Checked on 2026-10-08. Chainlink documents CCIP support for Tempo Moderato testnet, and its public testnet directory separately lists Base Sepolia USDC. However, the directory does not list a Tempo USDC token/pool or an already-wired Base Sepolia ↔ Tempo Moderato USDC route. The Tempo guide describes a custom token integration that must be provisioned before transfers can be sent. Onda's `TempoSettlementProvider` therefore remains fail-closed.
 
-## Required before implementing the real adapter
+## Verified facts
 
-- An authoritative confirmation that Base Sepolia can bridge to Tempo Moderato, including the exact supported route.
-- Destination network name and chain ID for that route.
-- The exact destination token representation and contract address. Do not assume Tempo USDC is the same token as Base USDC.
-- The bridge/provider, route identifier, and route-specific configuration.
-- Source and destination contract addresses and ABIs, verified against current provider documentation or deployment metadata.
-- Required API credentials and the authenticated quote/status API requirements. LayerZero's Value Transfer API documents public chain/token discovery, but requires an API key for quotes and transfer status.
-- The quote's source amount, minimum/actual destination amount, destination address, and fees, with an explicit policy for whether destination amount may differ from the funded amount.
-- Required source and destination confirmations/finality rules.
-- A Tempo settlement address and its authorization/signing design. Any signing secret must be supplied through a secrets manager or protected environment variable and must never be added to the frontend or repository.
-- Test funds for the Base Sepolia source transfer and whatever destination-side fees the verified Tempo test environment requires.
+- Source network: Base Sepolia, EVM chain ID `84532`.
+- Destination network: Tempo Moderato testnet, EVM chain ID `42431`.
+- CCIP's Tempo integration guide describes transfers to/from Tempo using BurnMint pools and CCIP v1.6.0. It requires Token Manager Expert Mode access from Chainlink support.
+- The Tempo guide requires a Tempo token to be deployed and registered, a BurnMint pool to be activated, and the Tempo and remote-chain pools to be wired in both directions. It recommends testing through Transporter testnet.
+- The CCIP directory lists a Base Sepolia USDC token and pool. Its current USDC testnet listing does not include Tempo Moderato.
+- Onda's existing Base Sepolia funding asset is independently configured in `src/lib/payments/base/config.ts`. Do not treat the receiving Tempo TIP-20 as Circle-issued Base USDC; it would be a separately provisioned destination representation unless its issuer and redemption terms are verified.
 
-## Current discovery result
+## Why Onda has not implemented the adapter
 
-As checked on 2026-10-08, the LayerZero deployment directory includes Tempo Mainnet and Base Sepolia among its listed chains, but does not list Tempo Moderato as a testnet deployment. This does not prove that no private or separately operated test route exists; it means Onda does not have authoritative public evidence to configure one. Stargate's legacy API documentation is deprecated in favor of LayerZero's Value Transfer API.
+There is no provisioned and auditable token-pool pair for this product, nor confirmed approval to wire the existing Base Sepolia USDC pool to a Tempo representation. The public guide establishes that custom setup is possible; it does not establish the contract addresses, exact asset mapping, liquidity/redemption guarantee, route limits, finality policy, or production support that Onda needs. A custom route is not interchangeable with a pre-existing, issuer-backed USDC route.
 
-No Tempo token address, endpoint ID, pool, route ID, quote, API response, or transaction hash is configured here. Chain IDs and assets must come from the verified route's current metadata, not from assumptions.
+No contract addresses, route IDs, quotes, messages, or transfer hashes are fabricated here. `TempoSettlementProvider` and destination verification continue to reject real settlement while route configuration is absent. The explicit test provider remains simulation-only.
+
+## Exact next steps to make a route implementable
+
+1. Request Chainlink CCIP Token Manager Expert Mode access and confirm that Base Sepolia USDC may be connected to the selected Tempo token.
+2. Decide whether Onda accepts a newly issued TIP-20 representation, including who issues, redeems, and backs it. Confirm asset naming and redemption terms with Tempo/Chainlink and relevant issuers.
+3. Provision the Tempo token/pool and wire both token pools. Record the exact token and pool addresses on both chains, CCIP version, chain selectors, fee token, rate limits, and explorer verification links.
+4. Complete a real testnet round trip in Transporter using the exact source asset and destination representation. Record source/destination transaction hashes and the message ID.
+5. Confirm route-specific quote/status APIs (if used), source/destination confirmations, failure/refund handling, limits, and any credentials with Chainlink.
+6. Only then implement `RealTempoProvider` behind `SettlementProvider`, with server-side source transaction submission, independent destination verification, idempotency, and failure tests.
+
+Required testnet setup includes Base Sepolia ETH and the exact supported source token, Tempo Moderato alphaUSD for gas, a Tempo admin wallet, Token Manager Expert Mode access, and the provisioned/wired pools. No private key or API credential is currently added to the application.
+
+## References
+
+- [Chainlink CCIP Tempo integration guide](https://docs.chain.link/ccip/v1/evm/tools-resources/network-specific/tempo-integration-guide)
+- [Chainlink CCIP testnet directory](https://docs.chain.link/ccip/directory/testnet)
+- [Chainlink CCIP testnet USDC listing](https://docs.chain.link/ccip/directory/testnet/token/USDC)
+- [Chainlink CCIP changelog: Tempo Moderato support](https://docs.chain.link/changelog?product=Nodes)
 
 ## Safe local testing
 
-Set `SETTLEMENT_PROVIDER=test` only in a non-production environment. The test provider records `verificationStatus=simulated`, leaves bridge/destination fields null, and displays that no funds moved. It does not generate synthetic transaction hashes or message identifiers. Production rejects this provider selection. It is not a bridge test or evidence of Tempo settlement.
+Set `SETTLEMENT_PROVIDER=test` only in a non-production environment. The test provider records `verificationStatus=simulated`, leaves bridge/destination fields null, and displays that no funds moved. Production rejects this provider selection. It is not a bridge test or evidence of Tempo settlement.
