@@ -1,24 +1,99 @@
 import Link from "next/link";
 import { ArrowUpRight, Plus } from "lucide-react";
+import { MarketingLanding } from "@/components/marketing-landing";
 import { SiteHeader } from "@/components/site-header";
-import { BrandEmblem } from "@/components/brand";
 import { db } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth/session";
 import { paymentStatusLabel } from "@/lib/payments/domain";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 const money = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const dateFormat = new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric" });
 
 export default async function DashboardPage() {
   const user = await getSessionUser();
-  if (!user) return <main className="landing"><SiteHeader /><div className="landing-content"><p className="eyebrow"><span className="eyebrow-dot" />PAYMENTS TO NIGERIA</p><h1>Pay across borders.<br /><em>Keep it clear.</em></h1><p className="landing-copy">Create a payment. Your recipient chooses whether to keep USDC or receive naira.</p><div className="landing-actions"><Link className="button button-primary" href="/signup">Create account <span>→</span></Link><Link className="button button-quiet" href="/login">Sign in</Link></div><div className="flow-note"><span>01&nbsp; Pay someone</span><span className="flow-line"/><span>02&nbsp; Recipient chooses</span></div></div><footer className="landing-footer"><span>ONDA · PAYMENTS TO NIGERIA</span><span>BUSINESS PAYS · RECIPIENT CHOOSES</span></footer></main>;
+  if (!user) return <MarketingLanding />;
 
   const [payments, paymentCount] = await Promise.all([
     db.payment.findMany({ where: { businessId: user.businessId }, include: { recipient: true }, orderBy: { createdAt: "desc" }, take: 8 }),
     db.payment.count({ where: { businessId: user.businessId } }),
   ]);
-  return <div className="app-shell"><SiteHeader signedIn businessName={user.business.name} /><main className="dashboard page-wrap"><div className="page-heading"><div><p className="eyebrow">OVERVIEW</p><h1>Good to see you, {user.name.split(" ")[0]}.</h1><p className="subheading">Your payments, all in one place.</p></div><Link className="button button-primary" href="/payments/new"><Plus size={17}/> Pay someone</Link></div>
-    <div className="dashboard-meta"><span>RECENT PAYMENTS</span><span>{paymentCount} {paymentCount === 1 ? "payment" : "payments"}</span></div>
-    {payments.length ? <div className="payment-list">{payments.map((payment) => <Link className="payment-row" href={`/payments/${payment.id}`} key={payment.id}><div className="recipient-avatar">{payment.recipient.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</div><div className="payment-person"><strong>{payment.recipient.name}</strong><span>{payment.recipient.identifier}</span></div><div className="payment-row-amount"><strong>${money.format(Number(payment.amount))} <small>USDC</small></strong><span>{new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric" }).format(payment.createdAt)}</span></div><span className={`status status-${payment.status}`}>{paymentStatusLabel(payment.status)}</span><ArrowUpRight className="row-arrow" size={17}/></Link>)}</div> : <section className="empty-state"><BrandEmblem className="empty-mark"/><h2>Your payments will show up here</h2><p>Send your first payment to Nigeria when you’re ready.</p><Link className="button button-primary" href="/payments/new">Pay someone <span>→</span></Link></section>}
-    <p className="dashboard-caption">Payments created here are recorded for review. No funds move yet.</p>
-  </main></div>;
+
+  return (
+    <div className="app-shell">
+      <SiteHeader signedIn businessName={user.business.name} />
+      <main className="dashboard page-wrap dashboard-premium">
+        <div className="dashboard-premium-heading">
+          <div>
+            <p className="eyebrow">BUSINESS PAYMENTS <span className="dashboard-country">· NIGERIA</span></p>
+            <h1>Good to see you, {user.name.split(" ")[0]}.</h1>
+            <p className="subheading">A clear view of the payments your team has created.</p>
+          </div>
+          <Button render={<Link href="/payments/new" />} role="link">
+            <Plus aria-hidden="true" size={17} /> Pay someone
+          </Button>
+        </div>
+
+        <Card className="dashboard-activity-card">
+          <CardHeader className="dashboard-activity-header flex flex-row items-center justify-between px-6 py-5">
+            <div>
+              <CardTitle className="font-semibold text-primary">Payment activity</CardTitle>
+              <CardDescription className="mt-1 text-xs">Recent payments created by your business.</CardDescription>
+            </div>
+            <span className="dashboard-count"><strong>{paymentCount}</strong> {paymentCount === 1 ? "payment" : "payments"}</span>
+          </CardHeader>
+          <CardContent className="dashboard-activity-content px-0 pb-0">
+            {payments.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Recipient</TableHead>
+                    <TableHead>Amount</TableHead>
+                    <TableHead>Created</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead><span className="sr-only">Open payment</span></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {payments.map((payment) => (
+                    <TableRow key={payment.id}>
+                      <TableCell>
+                        <Link className="dashboard-recipient-link" href={`/payments/${payment.id}`}>
+                          <span className="recipient-avatar">{payment.recipient.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span>
+                          <span className="dashboard-recipient-copy"><strong>{payment.recipient.name}</strong><small>{payment.recipient.identifier}</small></span>
+                        </Link>
+                      </TableCell>
+                      <TableCell><strong className="dashboard-amount">${money.format(Number(payment.amount))}</strong><small className="dashboard-asset">{payment.asset}</small></TableCell>
+                      <TableCell className="dashboard-date">{dateFormat.format(payment.createdAt)}</TableCell>
+                      <TableCell><Badge className={`status status-${payment.status}`} variant="outline">{paymentStatusLabel(payment.status)}</Badge></TableCell>
+                      <TableCell><Link aria-label={`Open payment to ${payment.recipient.name}`} className="dashboard-open-link" href={`/payments/${payment.id}`}><ArrowUpRight aria-hidden="true" size={16} /></Link></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <div className="dashboard-empty">
+                <span className="dashboard-empty-index">01</span>
+                <div><h2>Your first payment starts here.</h2><p>Create a payment to a recipient in Nigeria. It will appear here with its status and details.</p></div>
+                <Button render={<Link href="/payments/new" />} role="link">
+                  Pay someone <ArrowUpRight aria-hidden="true" size={15} />
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        <p className="dashboard-honesty-note">Payments are shown with their verified status. Creating a payment record alone does not move funds.</p>
+      </main>
+    </div>
+  );
 }
