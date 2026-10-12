@@ -167,22 +167,31 @@ export function summarizeLedger(entries: LedgerEntryRow[]): TreasuryBalances & {
 }
 
 export async function getTreasuryBalances(
-  client: Pick<Prisma.TransactionClient, "treasuryLedgerEntry">,
+  client: Pick<Prisma.TransactionClient, "treasuryAccount">,
   treasuryAccountId: string,
-): Promise<TreasuryBalances & { activeReservations: ActiveReservation[] }> {
-  const rows = await client.treasuryLedgerEntry.findMany({
-    where: { treasuryAccountId },
-    select: { id: true, type: true, amountUnits: true, paymentId: true, reservationId: true },
+): Promise<TreasuryBalances> {
+  return readAccountSnapshot(client, treasuryAccountId);
+}
+
+type AccountSnapshotClient = Pick<Prisma.TransactionClient, "treasuryAccount">;
+
+// O(1) read of the transactionally-maintained balance snapshot carried on the
+// TreasuryAccount row. availableUnits is always derived, never stored, so it
+// cannot disagree with its own components. The append-only TreasuryLedgerEntry
+// history stays the source of truth; reconcileSnapshot recomputes from it.
+async function readAccountSnapshot(
+  client: AccountSnapshotClient,
+  treasuryAccountId: string,
+): Promise<TreasuryBalances> {
+  const account = await client.treasuryAccount.findUnique({
+    where: { id: treasuryAccountId },
+    select: { creditedUnits: true, reservedUnits: true, debitedUnits: true },
   });
-  return summarizeLedger(
-    rows.map((row) => ({
-      id: row.id,
-      type: row.type,
-      amountUnits: row.amountUnits,
-      paymentId: row.paymentId,
-      reservationId: row.reservationId,
-    })),
-  );
+  if (!account) throw new LedgerError("Treasury account is missing.");
+  const creditedUnits = BigInt(String(account.creditedUnits));
+  const reservedUnits = BigInt(String(account.reservedUnits));
+  const debitedUnits = BigInt(String(account.debitedUnits));
+  return { creditedUnits, reservedUnits, debitedUnits, availableUnits: creditedUnits - reservedUnits - debitedUnits };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -232,13 +241,47 @@ export async function withGuardedTreasurySection<T>(
   }
 }
 
+// Active reservation for a payment: the one RESERVE entry for that payment not
+// yet consumed by a RELEASE or DEBIT. Bounded by the payment's settlement
+// attempts (indexed by paymentId + reservationId), never a full-account scan.
 export async function findActiveReservationForPayment(
   tx: TreasuryTx,
   treasuryAccountId: string,
   paymentId: string,
 ): Promise<ActiveReservation | null> {
-  const balances = summarizeLedger(await loadEntries(tx, treasuryAccountId));
-  return balances.activeReservations.find((entry) => entry.paymentId === paymentId) ?? null;
+  const reserves = await tx.treasuryLedgerEntry.findMany({
+    where: { treasuryAccountId, paymentId, type: "RESERVE" },
+    select: { id: true, paymentId: true, amountUnits: true },
+    orderBy: { createdAt: "asc" },
+  });
+  for (const reserve of reserves) {
+    if (!(await reservationConsumer(tx, reserve.id))) {
+      return { id: String(reserve.id), paymentId: reserve.paymentId, amountUnits: BigInt(String(reserve.amountUnits)) };
+    }
+  }
+  return null;
+}
+
+async function reservationConsumer(tx: TreasuryTx, reservationId: string): Promise<boolean> {
+  const consumer = await tx.treasuryLedgerEntry.findFirst({
+    where: { reservationId, type: { in: ["RELEASE", "DEBIT"] } },
+    select: { id: true },
+  });
+  return consumer !== null;
+}
+
+async function findActiveReservationById(
+  tx: TreasuryTx,
+  treasuryAccountId: string,
+  reservationId: string,
+): Promise<ActiveReservation | null> {
+  const reserve = await tx.treasuryLedgerEntry.findFirst({
+    where: { id: reservationId, treasuryAccountId, type: "RESERVE" },
+    select: { id: true, paymentId: true, amountUnits: true },
+  });
+  if (!reserve) return null;
+  if (await reservationConsumer(tx, reserve.id)) return null;
+  return { id: String(reserve.id), paymentId: reserve.paymentId, amountUnits: BigInt(String(reserve.amountUnits)) };
 }
 
 export async function findDebitByKey(
@@ -268,7 +311,7 @@ export async function creditFundingDeposit(
   const key = fundingCreditKey(input.chainId, input.transactionHash);
   const existing = await tx.treasuryLedgerEntry.findFirst({ where: { idempotencyKey: key }, select: { id: true } });
   if (existing) return { entryId: String(asRecord(existing).id), duplicate: true };
-  const balances = summarizeLedger(await loadEntries(tx, input.treasuryAccountId));
+  const snapshot = await readAccountSnapshot(tx, input.treasuryAccountId);
   // NOTE: no in-transaction P2002 handling here, by design — mirrors
   // debitSettlement. On Postgres a unique-violation aborts the whole
   // transaction (25P02), so the duplicate cannot be re-read inside it. A
@@ -281,10 +324,14 @@ export async function creditFundingDeposit(
       paymentId: input.paymentId,
       type: "CREDIT",
       amountUnits: input.amountUnits,
-      balanceAfterUnits: balances.availableUnits + input.amountUnits,
+      balanceAfterUnits: snapshot.availableUnits + input.amountUnits,
       idempotencyKey: key,
       reference: input.reference ?? input.transactionHash.toLowerCase(),
     },
+  });
+  await tx.treasuryAccount.update({
+    where: { id: input.treasuryAccountId },
+    data: { creditedUnits: { increment: input.amountUnits } },
   });
   return { entryId: String(asRecord(created).id), duplicate: false };
 }
@@ -321,13 +368,13 @@ export async function checkReserveFits(
   },
 ): Promise<{ availableUnits: bigint }> {
   if (input.amountUnits <= BigInt(0)) throw new LedgerError("Settlement reservations must be positive.");
-  const balances = summarizeLedger(await loadEntries(tx, input.treasuryAccountId));
-  const active = balances.activeReservations.find((entry) => entry.paymentId === input.paymentId);
+  const active = await findActiveReservationForPayment(tx, input.treasuryAccountId, input.paymentId);
   if (active) throw new ReservationExistsError();
-  if (balances.availableUnits < input.amountUnits) {
+  const snapshot = await readAccountSnapshot(tx, input.treasuryAccountId);
+  if (snapshot.availableUnits < input.amountUnits) {
     throw new LedgerInsufficientFundsError("Treasury available balance cannot cover this settlement.");
   }
-  return { availableUnits: balances.availableUnits };
+  return { availableUnits: snapshot.availableUnits };
 }
 
 export async function reserveForSettlement(
@@ -346,7 +393,7 @@ export async function reserveForSettlement(
     paymentId: input.paymentId,
     amountUnits: input.amountUnits,
   });
-  const balances = summarizeLedger(await loadEntries(tx, input.treasuryAccountId));
+  const snapshot = await readAccountSnapshot(tx, input.treasuryAccountId);
   try {
     const created = await tx.treasuryLedgerEntry.create({
       data: {
@@ -354,10 +401,14 @@ export async function reserveForSettlement(
         paymentId: input.paymentId,
         type: "RESERVE",
         amountUnits: input.amountUnits,
-        balanceAfterUnits: balances.availableUnits - input.amountUnits,
+        balanceAfterUnits: snapshot.availableUnits - input.amountUnits,
         idempotencyKey: input.idempotencyKey ?? reserveKey(input.paymentId, input.attemptNumber),
         reference: `settlement attempt ${input.attemptNumber}`,
       },
+    });
+    await tx.treasuryAccount.update({
+      where: { id: input.treasuryAccountId },
+      data: { reservedUnits: { increment: input.amountUnits } },
     });
     return { reservationId: String(asRecord(created).id) };
   } catch (error) {
@@ -372,9 +423,9 @@ export async function releaseReservation(
   tx: TreasuryTx,
   input: { treasuryAccountId: string; reservationId: string; reason: string },
 ): Promise<{ entryId: string; alreadyReleased: boolean }> {
-  const balances = summarizeLedger(await loadEntries(tx, input.treasuryAccountId));
-  const reservation = balances.activeReservations.find((entry) => entry.id === input.reservationId);
+  const reservation = await findActiveReservationById(tx, input.treasuryAccountId, input.reservationId);
   if (!reservation) return { entryId: "", alreadyReleased: true };
+  const snapshot = await readAccountSnapshot(tx, input.treasuryAccountId);
   try {
     const created = await tx.treasuryLedgerEntry.create({
       data: {
@@ -382,11 +433,15 @@ export async function releaseReservation(
         paymentId: reservation.paymentId,
         type: "RELEASE",
         amountUnits: reservation.amountUnits,
-        balanceAfterUnits: balances.availableUnits + reservation.amountUnits,
+        balanceAfterUnits: snapshot.availableUnits + reservation.amountUnits,
         reservationId: reservation.id,
         idempotencyKey: releaseKey(reservation.id),
         reference: input.reason.slice(0, 240),
       },
+    });
+    await tx.treasuryAccount.update({
+      where: { id: input.treasuryAccountId },
+      data: { reservedUnits: { decrement: reservation.amountUnits } },
     });
     return { entryId: String(asRecord(created).id), alreadyReleased: false };
   } catch (error) {
@@ -412,12 +467,12 @@ export async function debitSettlement(
   const key = debitKey(input.providerIdempotencyKey);
   const existing = await tx.treasuryLedgerEntry.findFirst({ where: { idempotencyKey: key }, select: { id: true } });
   if (existing) return { entryId: String(asRecord(existing).id), duplicate: true };
-  const balances = summarizeLedger(await loadEntries(tx, input.treasuryAccountId));
-  const reservation = balances.activeReservations.find((entry) => entry.id === input.reservationId);
+  const reservation = await findActiveReservationById(tx, input.treasuryAccountId, input.reservationId);
   if (!reservation) throw new LedgerConflictError("There is no active treasury reservation for this settlement.");
   if (reservation.paymentId !== input.paymentId || reservation.amountUnits !== input.amountUnits) {
     throw new LedgerConflictError("The settlement debit does not match its treasury reservation.");
   }
+  const snapshot = await readAccountSnapshot(tx, input.treasuryAccountId);
   // NOTE: no P2002 handling here on purpose. In Postgres any error poisons
   // the enclosing transaction, so a duplicate can only be confirmed with a
   // fresh read outside of it — see the callers, which treat a duplicate key
@@ -428,11 +483,16 @@ export async function debitSettlement(
       paymentId: input.paymentId,
       type: "DEBIT",
       amountUnits: input.amountUnits,
-      balanceAfterUnits: balances.availableUnits,
+      balanceAfterUnits: snapshot.availableUnits,
       reservationId: reservation.id,
       idempotencyKey: key,
       reference: input.transactionHash.toLowerCase(),
     },
+  });
+  // Debit moves the hold from reserved to debited: available is unchanged.
+  await tx.treasuryAccount.update({
+    where: { id: input.treasuryAccountId },
+    data: { reservedUnits: { decrement: input.amountUnits }, debitedUnits: { increment: input.amountUnits } },
   });
   return { entryId: String(asRecord(created).id), duplicate: false };
 }
@@ -457,4 +517,47 @@ export function reconcileTreasury(
     driftUnits,
     status: driftUnits === BigInt(0) ? "balanced" : driftUnits < BigInt(0) ? "shortfall" : "surplus",
   };
+}
+
+export type SnapshotReconciliation = {
+  snapshot: TreasuryBalances;
+  recomputed: TreasuryBalances;
+  drift: { creditedUnits: bigint; reservedUnits: bigint; debitedUnits: bigint; availableUnits: bigint };
+  consistent: boolean;
+};
+
+// Recompute balances by scanning the append-only ledger (the authoritative
+// source) — the one place a full scan is intentional. Used for backfill
+// verification and the reconcile op; never on the hot path.
+export async function recomputeBalancesFromLedger(
+  tx: TreasuryTx,
+  treasuryAccountId: string,
+): Promise<TreasuryBalances> {
+  const summary = summarizeLedger(await loadEntries(tx, treasuryAccountId));
+  return {
+    creditedUnits: summary.creditedUnits,
+    reservedUnits: summary.reservedUnits,
+    debitedUnits: summary.debitedUnits,
+    availableUnits: summary.availableUnits,
+  };
+}
+
+// Compare the maintained snapshot to a fresh recomputation from the ledger.
+// Reports drift WITHOUT writing: the ledger stays authoritative and history is
+// never overwritten to hide a discrepancy.
+export async function reconcileSnapshot(
+  tx: TreasuryTx,
+  treasuryAccountId: string,
+): Promise<SnapshotReconciliation> {
+  const snapshot = await readAccountSnapshot(tx, treasuryAccountId);
+  const recomputed = await recomputeBalancesFromLedger(tx, treasuryAccountId);
+  const drift = {
+    creditedUnits: snapshot.creditedUnits - recomputed.creditedUnits,
+    reservedUnits: snapshot.reservedUnits - recomputed.reservedUnits,
+    debitedUnits: snapshot.debitedUnits - recomputed.debitedUnits,
+    availableUnits: snapshot.availableUnits - recomputed.availableUnits,
+  };
+  const consistent =
+    drift.creditedUnits === BigInt(0) && drift.reservedUnits === BigInt(0) && drift.debitedUnits === BigInt(0);
+  return { snapshot, recomputed, drift, consistent };
 }

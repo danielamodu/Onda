@@ -172,6 +172,14 @@ model TreasuryAccount {
   tokenDecimals   Int
   treasuryAddress String
   version         Int      @default(0)
+  // Transactionally-maintained balance snapshot in integer base units. The
+  // append-only TreasuryLedgerEntry history remains authoritative; these are a
+  // derived cache updated in the same transaction as each entry, so hot-path
+  // operations read O(1) instead of scanning all entries. availableUnits is
+  // always derived (credited - reserved - debited), never stored.
+  creditedUnits   BigInt   @default(0)
+  reservedUnits   BigInt   @default(0)
+  debitedUnits    BigInt   @default(0)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   entries         TreasuryLedgerEntry[]
@@ -197,6 +205,7 @@ model TreasuryLedgerEntry {
 
   @@index([treasuryAccountId, type])
   @@index([paymentId])
+  @@index([reservationId])
 }
 
 model SettlementBatch {
