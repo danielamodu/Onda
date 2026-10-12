@@ -1,5 +1,11 @@
 # Tempo settlement route: CCIP setup required
 
+> Note (2026-10-09): Onda is now a Tempo-only product. The CCIP/Base-Sepolia
+> route described below was abandoned — see
+> [Tempo-native settlement](TEMPO_NATIVE_SETTLEMENT.md) for the implemented
+> Tempo Moderato flow. This file is kept for audit history; its "next steps"
+> must not be implemented.
+
 Checked on 2026-10-08. Chainlink documents CCIP support for Tempo Moderato testnet, and its public testnet directory separately lists Base Sepolia USDC. However, the directory does not list a Tempo USDC token/pool or an already-wired Base Sepolia ↔ Tempo Moderato USDC route. The Tempo guide describes a custom token integration that must be provisioned before transfers can be sent. Onda's `TempoSettlementProvider` therefore remains fail-closed.
 
 ## Verified facts

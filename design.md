@@ -9,13 +9,13 @@
 
 ## Visual language
 
-- **Direction:** Restrained financial utility with editorial spacing and clear transaction hierarchy.
+- **Direction:** Restrained financial utility with an editorial, asymmetric composition. The public landing page tells one payment story through a continuous crimson route line rather than a conventional centered hero and feature-card grid.
 - **Brand source:** The supplied Onda mark. Preserve its lowercase wordmark, navy, crimson, and warm white. Do not replace the mark with a text glyph or redraw it in CSS.
 - **Brand files:** Use `public/brand/onda-logo.png` in the interface. `public/brand/onda-logo-source.png` preserves the supplied transparent source image.
 - **Typography:** Manrope for headings and display; DM Sans for interface/body copy; DM Mono for IDs, amounts, and compact metadata. Keep the existing families for consistency and readability.
 - **Color roles:** Navy is the main action and text color. Crimson identifies the brand and is used sparingly for small accents; it must not communicate success. Warm white and cool gray form the surfaces. Success, warning, and error each have distinct semantic colors.
 - **Surfaces:** Light neutral page canvas, white working surfaces, subtle cool borders, and restrained shadow only for elevated forms/details.
-- **Motion:** Existing short transitions for button and row feedback only. Respect reduced-motion preferences. No decorative motion added.
+- **Motion:** Short transitions for button and row feedback. On the public landing page, the route line may draw from business to recipient to explain the handoff; this motion must be subtle, structural, and disabled for reduced-motion preferences.
 - **Reference principles:** Increase's transaction-first hierarchy and direct financial language; Jeton's short action labels and simple transfer progression. Onda keeps the same restraint without copying their layouts or brand details.
 
 ## Design tokens
@@ -80,3 +80,5 @@ Existing spacing/radius rhythm remains: 4/8/12/16/24/32px spacing; 6px controls,
 - Use one shared Onda logo component across business and recipient shells.
 - Keep colors token-driven so future UI stays on-brand.
 - The logo mark is the source of truth; no invented replacement icon or text symbol.
+- Use shadcn primitives as accessible interaction foundations and style them with Onda tokens; never expose the default shadcn theme.
+- Marketing illustrations must be clearly illustrative and must not imply real payments, balances, users, or payout capabilities that are not live.
