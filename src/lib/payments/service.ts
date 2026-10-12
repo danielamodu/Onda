@@ -9,13 +9,14 @@ export async function createPayment(businessId: string, input: CreatePaymentInpu
       : null;
     const recipient = await tx.recipient.upsert({
       where: { businessId_identifier: { businessId, identifier } },
-      update: { name: input.recipientName, country: input.country, payoutCurrency: input.payoutCurrency, ...(account ? { accountId: account.id } : {}) },
+      update: { name: input.recipientName, country: input.country, payoutCurrency: input.payoutCurrency, tempoAddress: input.tempoAddress, ...(account ? { accountId: account.id } : {}) },
       create: {
         businessId,
         name: input.recipientName,
         identifier,
         country: input.country,
         payoutCurrency: input.payoutCurrency,
+        tempoAddress: input.tempoAddress,
         accountId: account?.id,
       },
     });

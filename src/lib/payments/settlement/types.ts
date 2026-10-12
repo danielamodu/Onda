@@ -24,6 +24,7 @@ export type SettlementInitiation = {
 
 export type SettlementAttemptSnapshot = {
   id: string;
+  paymentId: string;
   sourceChainId: number | null;
   destinationChainId: number | null;
   sourceAsset: string | null;

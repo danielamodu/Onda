@@ -7,27 +7,30 @@ import type {
   SettlementProvider,
   SettlementInitiation,
 } from "@/lib/payments/settlement/types";
+import { SettlementConfigurationError } from "@/lib/payments/settlement/errors";
+import { TempoNativeSettlementProvider } from "@/lib/payments/tempo/provider";
+import { TempoDestinationSettlementVerifier as TempoDestinationVerifier } from "@/lib/payments/tempo/verifier";
+import { getTempoSettlementConfig } from "@/lib/payments/tempo/config";
 
-export class SettlementConfigurationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SettlementConfigurationError";
-  }
-}
+export { SettlementConfigurationError };
+
+import type { TempoChainGateway } from "@/lib/payments/tempo/provider";
 
 export class TempoSettlementProvider implements SettlementProvider {
-  readonly id = "tempo";
-  readonly mode = "real" as const;
+  private readonly inner = new TempoNativeSettlementProvider();
+  readonly id = this.inner.id;
+  readonly mode = this.inner.mode;
 
-  assertAvailable(): never {
-    throw new SettlementConfigurationError(
-      "Real Tempo settlement is unavailable until the Base Sepolia to Tempo testnet route and destination asset are authoritatively verified.",
-    );
+  assertAvailable(): void {
+    this.inner.assertAvailable();
+  }
+
+  get batchGateway(): TempoChainGateway {
+    return this.inner.batchGateway;
   }
 
   async initiateSettlement(command: SettlementCommand): Promise<SettlementInitiation> {
-    void command;
-    this.assertAvailable();
+    return this.inner.initiateSettlement(command);
   }
 }
 
@@ -55,12 +58,10 @@ export class TestSettlementProvider implements SettlementProvider {
 }
 
 export class TempoDestinationSettlementVerifier implements DestinationSettlementVerifier {
+  private readonly inner = new TempoDestinationVerifier();
+
   async verifyDestination(expected: SettlementExpectation | null, attempt: SettlementAttemptSnapshot): Promise<DestinationVerification> {
-    void expected;
-    void attempt;
-    throw new SettlementConfigurationError(
-      "Tempo destination verification is unavailable until the route, destination token, and confirmation policy are verified.",
-    );
+    return this.inner.verifyDestination(expected, attempt);
   }
 }
 
@@ -82,6 +83,13 @@ export function getSettlementRuntime() {
   return { provider: new TempoSettlementProvider(), verifier: new TempoDestinationSettlementVerifier() };
 }
 
-export function getSettlementUiMode(): "test" | "unavailable" {
-  return process.env.SETTLEMENT_PROVIDER === "test" && process.env.NODE_ENV !== "production" ? "test" : "unavailable";
+export function getSettlementUiMode(): "tempo" | "test" | "unavailable" {
+  if (process.env.SETTLEMENT_PROVIDER === "test" && process.env.NODE_ENV !== "production") return "test";
+  if ((process.env.SETTLEMENT_PROVIDER ?? "tempo") !== "tempo") return "unavailable";
+  try {
+    getTempoSettlementConfig();
+    return "tempo";
+  } catch {
+    return "unavailable";
+  }
 }
