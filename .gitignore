@@ -6,6 +6,7 @@ coverage/
 .env
 .env.*
 !.env.example
+.neon
 .neon/
 *.db
 *.db-journal
