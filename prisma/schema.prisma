@@ -43,6 +43,20 @@ enum RecipientSettlementPreference {
   CONVERT_TO_NGN
 }
 
+enum TreasuryEntryType {
+  CREDIT
+  RESERVE
+  RELEASE
+  DEBIT
+  ADJUSTMENT
+}
+
+enum SettlementBatchStatus {
+  pending
+  settled
+  failed
+}
+
 model Business {
   id        String   @id @default(cuid())
   name      String
@@ -85,6 +99,7 @@ model Recipient {
   identifier         String
   country            String         @default("NG")
   payoutCurrency     PayoutCurrency @default(NGN)
+  tempoAddress       String?
   accountId          String?
   account            RecipientAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
   createdAt          DateTime       @default(now())
@@ -149,11 +164,66 @@ model Payment {
   @@index([status])
 }
 
+model TreasuryAccount {
+  id              String   @id @default(cuid())
+  chainId         Int
+  tokenAddress    String
+  tokenSymbol     String
+  tokenDecimals   Int
+  treasuryAddress String
+  version         Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  entries         TreasuryLedgerEntry[]
+  batches         SettlementBatch[]
+
+  @@unique([chainId, tokenAddress, treasuryAddress])
+}
+
+model TreasuryLedgerEntry {
+  id                String             @id @default(cuid())
+  treasuryAccountId String
+  treasuryAccount   TreasuryAccount    @relation(fields: [treasuryAccountId], references: [id], onDelete: Restrict)
+  paymentId         String?
+  type              TreasuryEntryType
+  amountUnits       BigInt
+  balanceAfterUnits BigInt
+  reservationId     String?
+  reservation       TreasuryLedgerEntry?  @relation("ReservationLink", fields: [reservationId], references: [id], onDelete: Restrict)
+  consumptions      TreasuryLedgerEntry[] @relation("ReservationLink")
+  idempotencyKey    String             @unique
+  reference         String?
+  createdAt         DateTime           @default(now())
+
+  @@index([treasuryAccountId, type])
+  @@index([paymentId])
+}
+
+model SettlementBatch {
+  id                     String                @id @default(cuid())
+  treasuryAccountId      String?
+  treasuryAccount        TreasuryAccount?      @relation(fields: [treasuryAccountId], references: [id], onDelete: SetNull)
+  providerIdempotencyKey String                @unique
+  paymentIds             String[]
+  status                 SettlementBatchStatus @default(pending)
+  transactionHash        String?               @unique
+  failureReason          String?
+  retryable              Boolean               @default(false)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  settledAt              DateTime?
+  failedAt               DateTime?
+
+  attempts PaymentSettlement[]
+}
+
 model PaymentSettlement {
   id                         String                        @id @default(cuid())
   paymentId                  String
   payment                    Payment                       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   attemptNumber              Int
+  batchId                    String?
+  batch                      SettlementBatch?              @relation(fields: [batchId], references: [id], onDelete: SetNull)
   provider                   String
   providerIdempotencyKey     String                        @unique
   status                     SettlementAttemptStatus       @default(pending)
@@ -170,7 +240,11 @@ model PaymentSettlement {
   destinationAmount          Decimal?                      @db.Decimal(36, 18)
   recipientAddress           String?
   sourceTransactionHash      String?
-  destinationTransactionHash String?                       @unique
+  // Intentionally NOT unique: one atomic batch transaction backs every
+  // attempt in the batch, so sibling attempts legitimately share this hash.
+  // Double-record protection lives in the debit idempotency keys plus the
+  // per-payment memo verification, not in this column.
+  destinationTransactionHash String?
   bridgeMessageId            String?                       @unique
   initiatedAt                DateTime                      @default(now())
   verifiedAt                 DateTime?
@@ -182,4 +256,5 @@ model PaymentSettlement {
 
   @@unique([paymentId, attemptNumber])
   @@index([paymentId, status])
+  @@index([destinationTransactionHash])
 }
