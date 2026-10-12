@@ -2,8 +2,16 @@ import { Prisma } from "@prisma/client";
 import type { Hash, Hex } from "viem";
 import { db } from "@/lib/db";
 import { transitionPayment } from "@/lib/payments/domain";
-import type { getBaseFundingConfig } from "@/lib/payments/base/config";
-import { BaseVerificationError, verifyBaseTransaction, type VerifiedBaseTransfer } from "@/lib/payments/base/verify";
+import type { TempoFundingConfig } from "@/lib/payments/tempo/config";
+import { TempoFundingVerificationError, verifyTempoFundingTransaction, type VerifiedTempoFunding } from "@/lib/payments/tempo/funding";
+import {
+  baseUnitsFromDecimalString,
+  creditVerifiedTempoDeposit,
+  fundingCreditKey,
+  getOrCreateTreasuryAccount,
+  withGuardedTreasurySection,
+  LedgerError,
+} from "@/lib/payments/treasury/ledger";
 
 export class FundingConflictError extends Error {
   constructor(message: string) {
@@ -18,11 +26,11 @@ export type FundingResult =
   | { state: "failed"; transactionHash: string; reason: string };
 
 type FundingDependencies = {
-  config: ReturnType<typeof getBaseFundingConfig>;
-  verify?: typeof verifyBaseTransaction;
+  config: TempoFundingConfig;
+  verify?: typeof verifyTempoFundingTransaction;
 };
 
-function toFailureMessage(error: BaseVerificationError) {
+function toFailureMessage(error: TempoFundingVerificationError) {
   return error.message.slice(0, 240);
 }
 
@@ -73,7 +81,7 @@ export async function fundPayment(
 
   let verification;
   try {
-    verification = await (dependencies.verify ?? verifyBaseTransaction)(
+    verification = await (dependencies.verify ?? verifyTempoFundingTransaction)(
       normalizedHash as Hash,
       payment.amount.toFixed(2),
       payment.id,
@@ -81,7 +89,7 @@ export async function fundPayment(
       dependencies.config,
     );
   } catch (error) {
-    if (!(error instanceof BaseVerificationError)) throw error;
+    if (!(error instanceof TempoFundingVerificationError)) throw error;
     await db.payment.updateMany({
       where: { id: paymentId, businessId, status: "funding", transactionHash: normalizedHash },
       data: { status: transitionPayment("funding", "failed"), fundingError: toFailureMessage(error) },
@@ -91,7 +99,19 @@ export async function fundPayment(
 
   if (verification.state === "pending") return { state: "pending", transactionHash: normalizedHash };
 
-  await persistFundingSuccess(businessId, paymentId, normalizedHash, verification.transfer);
+  let amountUnits: bigint;
+  try {
+    amountUnits = baseUnitsFromDecimalString(payment.amount.toFixed(2), verification.funding.tokenDecimals);
+  } catch (error) {
+    const reason = error instanceof LedgerError ? error.message : "The funding amount cannot be represented in token base units.";
+    await db.payment.updateMany({
+      where: { id: paymentId, businessId, status: "funding", transactionHash: normalizedHash },
+      data: { status: transitionPayment("funding", "failed"), fundingError: reason.slice(0, 240) },
+    });
+    return { state: "failed", transactionHash: normalizedHash, reason: reason.slice(0, 240) };
+  }
+
+  await persistFundingSuccess(businessId, paymentId, normalizedHash, verification.funding, amountUnits);
   return { state: "funded", transactionHash: normalizedHash };
 }
 
@@ -99,25 +119,58 @@ async function persistFundingSuccess(
   businessId: string,
   paymentId: string,
   transactionHash: string,
-  transfer: VerifiedBaseTransfer,
+  funding: VerifiedTempoFunding,
+  amountUnits: bigint,
 ) {
-  const result = await db.payment.updateMany({
-    where: { id: paymentId, businessId, status: "funding", transactionHash },
-    data: {
-      status: transitionPayment("funding", "funded"),
-      chainId: transfer.chainId,
-      tokenAddress: transfer.tokenAddress,
-      senderAddress: transfer.senderAddress,
-      destinationAddress: transfer.destinationAddress,
-      blockNumber: transfer.blockNumber,
-      blockHash: transfer.blockHash,
-      confirmedAt: new Date(),
-      fundingError: null,
-    },
+  const account = await getOrCreateTreasuryAccount(db, {
+    chainId: funding.chainId,
+    tokenAddress: funding.tokenAddress,
+    tokenSymbol: funding.tokenSymbol,
+    tokenDecimals: funding.tokenDecimals,
+    treasuryAddress: funding.treasuryAddress,
   });
-  if (result.count === 0) {
-    const current = await db.payment.findFirst({ where: { id: paymentId, businessId } });
-    if (current?.status === "funded" && current.transactionHash === transactionHash) return;
-    throw new FundingConflictError("Payment funding status changed before confirmation could be saved.");
+  try {
+    await withGuardedTreasurySection(db, account.id, async (tx) => {
+      const result = await tx.payment.updateMany({
+        where: { id: paymentId, businessId, status: "funding", transactionHash },
+        data: {
+          status: transitionPayment("funding", "funded"),
+          chainId: funding.chainId,
+          tokenAddress: funding.tokenAddress,
+          senderAddress: funding.senderAddress,
+          destinationAddress: funding.treasuryAddress,
+          blockNumber: funding.blockNumber,
+          blockHash: funding.blockHash,
+          confirmedAt: new Date(),
+          fundingError: null,
+        },
+      });
+      if (result.count === 0) {
+        const current = await tx.payment.findFirst({ where: { id: paymentId, businessId } });
+        if (current?.status === "funded" && current.transactionHash === transactionHash) return { replay: true as const };
+        throw new FundingConflictError("Payment funding status changed before confirmation could be saved.");
+      }
+      await creditVerifiedTempoDeposit(tx, {
+        treasuryAccountId: account.id,
+        paymentId,
+        chainId: funding.chainId,
+        tokenAddress: funding.tokenAddress,
+        amountUnits,
+        transactionHash,
+      });
+      return { replay: false as const };
+    });
+  } catch (error) {
+    // A concurrent duplicate credit won the race after our pre-check. The
+    // credit key is unique per funding transaction, so confirm the row with
+    // a fresh read (the guarded transaction already rolled back) and proceed.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const existing = await db.treasuryLedgerEntry.findFirst({
+        where: { idempotencyKey: fundingCreditKey(funding.chainId, transactionHash) },
+        select: { id: true },
+      });
+      if (existing) return;
+    }
+    throw error;
   }
 }
