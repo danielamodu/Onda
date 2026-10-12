@@ -21,6 +21,19 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
   });
 }
 
+function deriveBalances() {
+  let credited = BigInt(0), debited = BigInt(0);
+  const consumed = new Set<unknown>();
+  for (const e of mockDb.treasuryEntries) {
+    if (e.type === "CREDIT") credited += BigInt(String(e.amountUnits));
+    if (e.type === "DEBIT") { debited += BigInt(String(e.amountUnits)); if (e.reservationId) consumed.add(e.reservationId); }
+    if (e.type === "RELEASE" && e.reservationId) consumed.add(e.reservationId);
+  }
+  let reserved = BigInt(0);
+  for (const e of mockDb.treasuryEntries) { if (e.type === "RESERVE" && !consumed.has(e.id)) reserved += BigInt(String(e.amountUnits)); }
+  return { creditedUnits: credited, reservedUnits: reserved, debitedUnits: debited };
+}
+
 vi.mock("@/lib/db", () => ({
   db: {
     payment: {
@@ -94,7 +107,8 @@ vi.mock("@/lib/db", () => ({
       }),
     },
     treasuryAccount: {
-      findUnique: vi.fn(async () => (mockDb.treasuryAccount ? { ...mockDb.treasuryAccount } : null)),
+      findUnique: vi.fn(async () => (mockDb.treasuryAccount ? { ...mockDb.treasuryAccount, ...deriveBalances() } : null)),
+      update: vi.fn(async () => (mockDb.treasuryAccount ? { ...mockDb.treasuryAccount } : null)),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         if (mockDb.treasuryAccount) {
           const { Prisma } = await import("@prisma/client");
@@ -124,10 +138,10 @@ vi.mock("@/lib/db", () => ({
         return { id: entry.id };
       }),
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        return mockDb.treasuryEntries.find((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value)) ?? null;
+        return mockDb.treasuryEntries.find((entry) => matches(entry, where)) ?? null;
       }),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        return mockDb.treasuryEntries.filter((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value)).map((entry) => ({ ...entry }));
+        return mockDb.treasuryEntries.filter((entry) => matches(entry, where)).map((entry) => ({ ...entry }));
       }),
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({

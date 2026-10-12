@@ -39,15 +39,43 @@ type Entry = {
   reference: string | null;
 };
 
-function createFakeDb() {
+function createFakeDb(options: { seedAccount?: boolean } = {}) {
+  const seedAccount = options.seedAccount ?? true;
+  type Account = {
+    id: string;
+    version: number;
+    tokenDecimals: number;
+    chainId: number;
+    tokenAddress: string;
+    creditedUnits: bigint;
+    reservedUnits: bigint;
+    debitedUnits: bigint;
+  };
   const state = {
-    account: null as null | { id: string; version: number; tokenDecimals: number; chainId: number; tokenAddress: string },
+    account: (seedAccount
+      ? { id: "treasury-1", version: 0, tokenDecimals: 6, chainId: 42431, tokenAddress: "0xtoken", creditedUnits: BigInt(0), reservedUnits: BigInt(0), debitedUnits: BigInt(0) }
+      : null) as null | Account,
     entries: [] as Entry[],
     failNextBump: false,
     entrySeq: 0,
   };
+  // Supports strict equality plus the `{ in: [...] }` operator the ledger uses
+  // for the RELEASE/DEBIT consumer lookup.
+  const matchValue = (actual: unknown, expected: unknown): boolean => {
+    if (expected !== null && typeof expected === "object" && "in" in (expected as Record<string, unknown>)) {
+      return (expected as { in: unknown[] }).in.includes(actual);
+    }
+    return actual === expected;
+  };
   const matchWhere = (entry: Entry, where: Record<string, unknown>): boolean =>
-    Object.entries(where ?? {}).every(([key, value]) => (entry as unknown as Record<string, unknown>)[key] === value);
+    Object.entries(where ?? {}).every(([key, value]) => matchValue((entry as unknown as Record<string, unknown>)[key], value));
+
+  const applyBalanceDelta = (field: "creditedUnits" | "reservedUnits" | "debitedUnits", op: unknown) => {
+    if (!state.account || op == null || typeof op !== "object") return;
+    const change = op as { increment?: bigint; decrement?: bigint };
+    if (change.increment != null) state.account[field] += change.increment;
+    if (change.decrement != null) state.account[field] -= change.decrement;
+  };
 
   const treasuryLedgerEntry = {
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -70,7 +98,14 @@ function createFakeDb() {
     findUnique: vi.fn(async () => (state.account ? { ...state.account } : null)),
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
       if (state.account) throw p2002();
-      state.account = { id: "treasury-1", version: 0, tokenDecimals: Number(data.tokenDecimals ?? 6), chainId: 42431, tokenAddress: "0xtoken" };
+      state.account = { id: "treasury-1", version: 0, tokenDecimals: Number(data.tokenDecimals ?? 6), chainId: 42431, tokenAddress: "0xtoken", creditedUnits: BigInt(0), reservedUnits: BigInt(0), debitedUnits: BigInt(0) };
+      return { ...state.account };
+    }),
+    update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      if (!state.account) throw new Error("account missing");
+      applyBalanceDelta("creditedUnits", data.creditedUnits);
+      applyBalanceDelta("reservedUnits", data.reservedUnits);
+      applyBalanceDelta("debitedUnits", data.debitedUnits);
       return { ...state.account };
     }),
     updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
@@ -92,6 +127,7 @@ function createFakeDb() {
     treasuryAccount: {
       findUnique: treasuryAccount.findUnique,
       create: treasuryAccount.create,
+      update: treasuryAccount.update,
       updateMany: treasuryAccount.updateMany,
     },
     treasuryLedgerEntry,
@@ -137,7 +173,7 @@ describe("summarizeLedger", () => {
 
 describe("treasury account provisioning", () => {
   it("creates the account once and survives a creation race", async () => {
-    const { db } = createFakeDb();
+    const { db } = createFakeDb({ seedAccount: false });
     const identity = { chainId: 42431, tokenAddress: "0xtoken", tokenSymbol: "AlphaUSD", tokenDecimals: 6, treasuryAddress: "0xtreasury" };
     const first = await getOrCreateTreasuryAccount(db, identity);
     expect(first.id).toBe("treasury-1");
@@ -150,7 +186,7 @@ describe("treasury account provisioning", () => {
 describe("withGuardedTreasurySection", () => {
   it("bumps the version once on success", async () => {
     const { state, db } = createFakeDb();
-    state.account = { id: ACCOUNT_ID, version: 7, tokenDecimals: 6, chainId: 42431, tokenAddress: "0xtoken" };
+    state.account!.version = 7;
     const result = await withGuardedTreasurySection(db, ACCOUNT_ID, async () => "ok");
     expect(result).toBe("ok");
     expect(state.account?.version).toBe(8);
@@ -158,7 +194,7 @@ describe("withGuardedTreasurySection", () => {
 
   it("retries after contention and then succeeds", async () => {
     const { state, db } = createFakeDb();
-    state.account = { id: ACCOUNT_ID, version: 3, tokenDecimals: 6, chainId: 42431, tokenAddress: "0xtoken" };
+    state.account!.version = 3;
     state.failNextBump = true;
     const result = await withGuardedTreasurySection(db, ACCOUNT_ID, async () => "recovered");
     expect(result).toBe("recovered");
@@ -166,8 +202,7 @@ describe("withGuardedTreasurySection", () => {
   });
 
   it("surfaces permanent constraint violations without retrying", async () => {
-    const { state, db } = createFakeDb();
-    state.account = { id: ACCOUNT_ID, version: 0, tokenDecimals: 6, chainId: 42431, tokenAddress: "0xtoken" };
+    const { db } = createFakeDb();
     await expect(
       withGuardedTreasurySection(db, ACCOUNT_ID, async () => {
         throw p2002();
@@ -176,7 +211,7 @@ describe("withGuardedTreasurySection", () => {
   });
 
   it("fails closed when the treasury account is missing", async () => {
-    const { db } = createFakeDb();
+    const { db } = createFakeDb({ seedAccount: false });
     await expect(withGuardedTreasurySection(db, ACCOUNT_ID, async () => "x")).rejects.toThrow(LedgerError);
   });
 });
@@ -200,7 +235,7 @@ describe("creditFundingDeposit", () => {
       transactionHash: `0x${"AB".repeat(32)}`,
     });
     expect(replay).toMatchObject({ entryId: first.entryId, duplicate: true });
-    const balances = await getTreasuryBalances({ treasuryLedgerEntry: tx.treasuryLedgerEntry }, ACCOUNT_ID);
+    const balances = await getTreasuryBalances(tx, ACCOUNT_ID);
     expect(balances.availableUnits).toBe(BigInt(500000000));
   });
 
@@ -227,7 +262,7 @@ describe("reserveForSettlement", () => {
       treasuryAccountId: ACCOUNT_ID, paymentId: "pay-1", attemptNumber: 1, amountUnits: BigInt(400000),
     });
     expect(reservationId).toMatch(/^entry-/);
-    const balances = await getTreasuryBalances({ treasuryLedgerEntry: tx.treasuryLedgerEntry }, ACCOUNT_ID);
+    const balances = await getTreasuryBalances(tx, ACCOUNT_ID);
     expect(balances).toMatchObject({ availableUnits: BigInt(600000), reservedUnits: BigInt(400000) });
   });
 
@@ -266,7 +301,7 @@ describe("releaseReservation", () => {
     expect(released.alreadyReleased).toBe(false);
     const replay = await releaseReservation(tx, { treasuryAccountId: ACCOUNT_ID, reservationId, reason: "attempt failed terminally" });
     expect(replay.alreadyReleased).toBe(true);
-    const balances = await getTreasuryBalances({ treasuryLedgerEntry: tx.treasuryLedgerEntry }, ACCOUNT_ID);
+    const balances = await getTreasuryBalances(tx, ACCOUNT_ID);
     expect(balances).toMatchObject({ availableUnits: BigInt(1000), reservedUnits: BigInt(0) });
   });
 });
@@ -291,7 +326,7 @@ describe("debitSettlement", () => {
       reservationId, amountUnits: BigInt(400), transactionHash: `0x${"bb".repeat(32)}`,
     });
     expect(replay).toMatchObject({ entryId: first.entryId, duplicate: true });
-    const balances = await getTreasuryBalances({ treasuryLedgerEntry: tx.treasuryLedgerEntry }, ACCOUNT_ID);
+    const balances = await getTreasuryBalances(tx, ACCOUNT_ID);
     expect(balances).toMatchObject({ availableUnits: BigInt(600), reservedUnits: BigInt(0), debitedUnits: BigInt(400) });
   });
 
@@ -353,8 +388,7 @@ describe("treasury guard integration", () => {
 
 describe("historical base records", () => {
   it("credits tempo-verified deposits and refuses base-chain evidence", async () => {
-    const { state, tx } = createFakeDb();
-    state.account = { id: ACCOUNT_ID, version: 0, tokenDecimals: 6, chainId: 42431, tokenAddress: "0xtoken" };
+    const { tx } = createFakeDb();
     const ok = await creditVerifiedTempoDeposit(tx as never, {
       treasuryAccountId: ACCOUNT_ID,
       paymentId: "pay-tempo",
@@ -380,7 +414,7 @@ describe("historical base records", () => {
       amountUnits: BigInt(100),
       transactionHash: `0x${"dd".repeat(32)}`,
     })).rejects.toThrow(LedgerConflictError);
-    const balances = await getTreasuryBalances({ treasuryLedgerEntry: tx.treasuryLedgerEntry }, ACCOUNT_ID);
+    const balances = await getTreasuryBalances(tx, ACCOUNT_ID);
     expect(balances.creditedUnits).toBe(BigInt(100));
   });
 });

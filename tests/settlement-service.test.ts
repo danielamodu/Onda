@@ -5,7 +5,14 @@ function duplicateKeyError() {
   return new Prisma.PrismaClientKnownRequestError("Unique constraint", { code: "P2002", clientVersion: "6.19.3" });
 }
 
-const mockDb = vi.hoisted(() => ({
+const mockDb = vi.hoisted(() => {
+  const matchEntryWhere = (entry: Record<string, unknown>, where: Record<string, unknown>): boolean =>
+    Object.entries(where ?? {}).every(([key, value]) =>
+      value !== null && typeof value === "object" && "in" in (value as Record<string, unknown>)
+        ? (value as { in: unknown[] }).in.includes(entry[key])
+        : entry[key] === value,
+    );
+  return {
   state: {
     payment: null as null | Record<string, unknown>,
     attempts: [] as Array<Record<string, unknown>>,
@@ -16,12 +23,28 @@ const mockDb = vi.hoisted(() => ({
   payment: { findFirst: vi.fn(), updateMany: vi.fn() },
   paymentSettlement: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   treasuryAccount: {
-    findUnique: vi.fn(async () => (mockDb.state.treasuryAccount ? { ...mockDb.state.treasuryAccount } : null)),
+    // Derive the snapshot columns from the seeded entries so the fake stays
+    // internally consistent with the ledger's new snapshot reads/writes.
+    findUnique: vi.fn(async () => {
+      if (!mockDb.state.treasuryAccount) return null;
+      const entries = mockDb.state.treasuryEntries;
+      let credited = BigInt(0), debited = BigInt(0);
+      const consumed = new Set<unknown>();
+      for (const e of entries) {
+        if (e.type === "CREDIT") credited += BigInt(String(e.amountUnits));
+        if (e.type === "DEBIT") { debited += BigInt(String(e.amountUnits)); if (e.reservationId) consumed.add(e.reservationId); }
+        if (e.type === "RELEASE" && e.reservationId) consumed.add(e.reservationId);
+      }
+      let reserved = BigInt(0);
+      for (const e of entries) { if (e.type === "RESERVE" && !consumed.has(e.id)) reserved += BigInt(String(e.amountUnits)); }
+      return { ...mockDb.state.treasuryAccount, creditedUnits: credited, reservedUnits: reserved, debitedUnits: debited };
+    }),
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
       if (mockDb.state.treasuryAccount) throw duplicateKeyError();
       mockDb.state.treasuryAccount = { id: "treasury-1", version: 0, tokenDecimals: 6, chainId: 42431, tokenAddress: data.tokenAddress as string };
       return { ...mockDb.state.treasuryAccount };
     }),
+    update: vi.fn(async () => (mockDb.state.treasuryAccount ? { ...mockDb.state.treasuryAccount } : null)),
     updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
       if (!mockDb.state.treasuryAccount) return { count: 0 };
       if ((where as { version?: number }).version !== undefined && (where as { version?: number }).version !== mockDb.state.treasuryAccount.version) {
@@ -40,14 +63,15 @@ const mockDb = vi.hoisted(() => ({
       return { id: entry.id };
     }),
     findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      return mockDb.state.treasuryEntries.find((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value)) ?? null;
+      return mockDb.state.treasuryEntries.find((entry) => matchEntryWhere(entry, where)) ?? null;
     }),
     findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      return mockDb.state.treasuryEntries.filter((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value)).map((entry) => ({ ...entry }));
+      return mockDb.state.treasuryEntries.filter((entry) => matchEntryWhere(entry, where)).map((entry) => ({ ...entry }));
     }),
   },
   $transaction: vi.fn(),
-}));
+  };
+});
 
 vi.mock("@/lib/db", () => ({ db: mockDb }));
 

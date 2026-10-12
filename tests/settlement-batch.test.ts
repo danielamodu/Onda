@@ -17,7 +17,26 @@ const RECIPIENT_A = getAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
 const RECIPIENT_B = getAddress("0x2222222222222222222222222222222222222222");
 const BATCH_HASH = `0x${"55".repeat(32)}` as `0x${string}`;
 
-const mockDb = vi.hoisted(() => ({
+const mockDb = vi.hoisted(() => {
+  const matchEntryWhere = (entry: Record<string, unknown>, where: Record<string, unknown>): boolean =>
+    Object.entries(where ?? {}).every(([key, value]) =>
+      value !== null && typeof value === "object" && "in" in (value as Record<string, unknown>)
+        ? (value as { in: unknown[] }).in.includes(entry[key])
+        : entry[key] === value,
+    );
+  const deriveBalances = () => {
+    let credited = BigInt(0), debited = BigInt(0);
+    const consumed = new Set<unknown>();
+    for (const e of mockDb.state.treasuryEntries) {
+      if (e.type === "CREDIT") credited += BigInt(String(e.amountUnits));
+      if (e.type === "DEBIT") { debited += BigInt(String(e.amountUnits)); if (e.reservationId) consumed.add(e.reservationId); }
+      if (e.type === "RELEASE" && e.reservationId) consumed.add(e.reservationId);
+    }
+    let reserved = BigInt(0);
+    for (const e of mockDb.state.treasuryEntries) { if (e.type === "RESERVE" && !consumed.has(e.id)) reserved += BigInt(String(e.amountUnits)); }
+    return { creditedUnits: credited, reservedUnits: reserved, debitedUnits: debited };
+  };
+  return {
   state: {
     payments: [] as Array<Record<string, unknown>>,
     attempts: [] as Array<Record<string, unknown>>,
@@ -40,7 +59,8 @@ const mockDb = vi.hoisted(() => ({
     update: vi.fn(),
   },
   treasuryAccount: {
-    findUnique: vi.fn(async () => (mockDb.state.treasuryAccount ? { ...mockDb.state.treasuryAccount } : null)),
+    findUnique: vi.fn(async () => (mockDb.state.treasuryAccount ? { ...mockDb.state.treasuryAccount, ...deriveBalances() } : null)),
+    update: vi.fn(async () => (mockDb.state.treasuryAccount ? { ...mockDb.state.treasuryAccount } : null)),
     updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
       if (!mockDb.state.treasuryAccount) return { count: 0 };
       if ((where as { version?: number }).version !== undefined && (where as { version?: number }).version !== mockDb.state.treasuryAccount.version) {
@@ -59,14 +79,15 @@ const mockDb = vi.hoisted(() => ({
       return { id: entry.id };
     }),
     findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      return mockDb.state.treasuryEntries.find((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value)) ?? null;
+      return mockDb.state.treasuryEntries.find((entry) => matchEntryWhere(entry, where)) ?? null;
     }),
     findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      return mockDb.state.treasuryEntries.filter((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value)).map((entry) => ({ ...entry }));
+      return mockDb.state.treasuryEntries.filter((entry) => matchEntryWhere(entry, where)).map((entry) => ({ ...entry }));
     }),
   },
   $transaction: vi.fn(),
-}));
+  };
+});
 
 vi.mock("@/lib/db", () => ({ db: mockDb }));
 

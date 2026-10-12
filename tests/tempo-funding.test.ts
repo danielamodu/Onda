@@ -37,8 +37,26 @@ const mockedDb = vi.hoisted(() => {
     treasuryAccount: null as unknown,
     treasuryLedgerEntry: null as unknown,
   };
+  const matchEntryWhere = (entry: Record<string, unknown>, where: Record<string, unknown>): boolean =>
+    Object.entries(where ?? {}).every(([key, value]) =>
+      value !== null && typeof value === "object" && "in" in (value as Record<string, unknown>)
+        ? (value as { in: unknown[] }).in.includes(entry[key])
+        : entry[key] === value,
+    );
+  const deriveBalances = () => {
+    let credited = BigInt(0), debited = BigInt(0);
+    const consumed = new Set<unknown>();
+    for (const e of treasury.entries) {
+      if (e.type === "CREDIT") credited += BigInt(String(e.amountUnits));
+      if (e.type === "DEBIT") { debited += BigInt(String(e.amountUnits)); if (e.reservationId) consumed.add(e.reservationId); }
+      if (e.type === "RELEASE" && e.reservationId) consumed.add(e.reservationId);
+    }
+    let reserved = BigInt(0);
+    for (const e of treasury.entries) { if (e.type === "RESERVE" && !consumed.has(e.id)) reserved += BigInt(String(e.amountUnits)); }
+    return { creditedUnits: credited, reservedUnits: reserved, debitedUnits: debited };
+  };
   const treasuryAccount = {
-    findUnique: vi.fn(async () => (treasury.account ? { ...treasury.account } : null)),
+    findUnique: vi.fn(async () => (treasury.account ? { ...treasury.account, ...deriveBalances() } : null)),
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
       if (treasury.account) {
         throw new Prisma.PrismaClientKnownRequestError("Unique constraint", { code: "P2002", clientVersion: "6.19.3" });
@@ -46,6 +64,7 @@ const mockedDb = vi.hoisted(() => {
       treasury.account = { id: "treasury-1", version: 0, tokenDecimals: 6, chainId: 42431, tokenAddress: data.tokenAddress as string };
       return { ...treasury.account };
     }),
+    update: vi.fn(async () => (treasury.account ? { ...treasury.account } : null)),
     updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
       if (!treasury.account) return { count: 0 };
       if ((where as { version?: number }).version !== undefined && (where as { version?: number }).version !== treasury.account.version) {
@@ -66,10 +85,10 @@ const mockedDb = vi.hoisted(() => {
       return { id: entry.id };
     }),
     findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      return treasury.entries.find((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value)) ?? null;
+      return treasury.entries.find((entry) => matchEntryWhere(entry, where)) ?? null;
     }),
     findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-      return treasury.entries.filter((entry) => Object.entries(where ?? {}).every(([key, value]) => entry[key] === value));
+      return treasury.entries.filter((entry) => matchEntryWhere(entry, where));
     }),
   };
   const paymentMocks = { findFirst: vi.fn(), updateMany: vi.fn() };
