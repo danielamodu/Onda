@@ -18,26 +18,35 @@ import { createPayment } from "@/lib/payments/service";
 const validInput = {
   recipientName: "Ada Okafor",
   identifier: "ada@example.com",
+  tempoAddress: "0x2222222222222222222222222222222222222222",
   country: "NG",
   payoutCurrency: "NGN",
   amount: 500,
-  asset: "USDC",
+  asset: "AlphaUSD",
   reference: "INV-1042",
 };
 
 describe("payment input validation", () => {
-  it("accepts a valid Nigerian USDC payment", () => {
-    expect(createPaymentSchema.parse(validInput)).toMatchObject({ amount: 500, country: "NG", asset: "USDC" });
+  it("accepts a valid Nigerian AlphaUSD payment", () => {
+    expect(createPaymentSchema.parse(validInput)).toMatchObject({ amount: 500, country: "NG", asset: "AlphaUSD" });
   });
 
   it.each([
     [{ ...validInput, amount: 0 }, "zero amount"],
     [{ ...validInput, amount: 1.001 }, "more than two decimals"],
     [{ ...validInput, asset: "BTC" }, "unsupported asset"],
+    [{ ...validInput, asset: "USDC" }, "legacy USDC asset"],
     [{ ...validInput, country: "GH" }, "unsupported country"],
     [{ ...validInput, recipientName: " " }, "missing recipient"],
+    [{ ...validInput, tempoAddress: "not-an-address" }, "malformed recipient Tempo address"],
   ])("rejects %s (%s)", (input) => {
     expect(createPaymentSchema.safeParse(input).success).toBe(false);
+  });
+
+  it("requires the recipient Tempo address", () => {
+    const { tempoAddress: _omitted, ...withoutAddress } = validInput;
+    void _omitted;
+    expect(createPaymentSchema.safeParse(withoutAddress).success).toBe(false);
   });
 });
 
@@ -51,7 +60,11 @@ describe("payment creation", () => {
     const payment = await createPayment("business-1", input);
     expect(dbMock.$transaction).toHaveBeenCalledOnce();
     expect(tx.recipient.upsert).toHaveBeenCalledWith(expect.objectContaining({ where: { businessId_identifier: { businessId: "business-1", identifier: "ada@example.com" } } }));
-    expect(tx.payment.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ businessId: "business-1", recipientId: "recipient-1", status: "created", amount: 500, asset: "USDC" }) }));
+    expect(tx.recipient.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ tempoAddress: "0x2222222222222222222222222222222222222222" }),
+      create: expect.objectContaining({ tempoAddress: "0x2222222222222222222222222222222222222222" }),
+    }));
+    expect(tx.payment.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ businessId: "business-1", recipientId: "recipient-1", status: "created", amount: 500, asset: "AlphaUSD" }) }));
     expect(payment).toMatchObject({ id: "payment-1", status: "created" });
   });
 
